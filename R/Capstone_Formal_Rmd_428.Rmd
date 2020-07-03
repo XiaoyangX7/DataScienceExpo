@@ -1,0 +1,473 @@
+---
+title: "Capstone_FormalCode"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+windows.options(width=10, height=10)
+library(tidyverse)
+library(dplyr)
+library(stringr)
+
+#install.packages("varhandle")
+
+library(varhandle)
+
+options(stringsAsFactors = FALSE)
+library(ggplot2)
+library(factoextra)
+library(sentimentr)
+library(cluster)
+
+library(ggthemes)
+library(glmnet)
+theme_set(theme_bw())
+library(Rtsne)
+library(tidytext)
+library(quanteda)
+library(rpart)
+library(rpart.plot)
+library(psych)
+#install.packages("DiagrammeR")
+library(DiagrammeR)
+
+library(xgboost)
+
+#install.packages("coefplot")
+library(coefplot)
+
+
+# You may need to install the following packages
+# library(roxygen2)
+# library(usethis)
+# library(testthat)
+# library(R6)
+# library(jsonlite)
+# library(e1071)
+
+
+
+library(pROC)
+library(caret)
+library(data.table)
+library(xgboostExplainer)
+library(Ckmeans.1d.dp)
+library(randomForest)
+set.seed(7)
+```
+
+```{r read & process, include = FALSE}
+abb_train <- read.csv("888_train.csv")
+abb_test <- read.csv("888_test.csv")
+#data <- read.csv()
+
+
+# abb_train = abb_train %>% left_join(lists,by = c("id" = "listing_id"))
+# abb_test = abb_test %>% left_join(lists,by = c("id" = "listing_id"))
+# abb_train$n[is.na(abb_train$n)] <- 0
+# abb_test$n[is.na(abb_test$n)] <- 0
+# abb_train$freq = abb_train$n / abb_train$number_of_reviews * 100
+# abb_test$freq = abb_test$n / abb_test$number_of_reviews * 100
+# abb_train$freq[is.na(abb_train$freq)] <- 0
+# abb_test$freq[is.na(abb_test$freq)] <- 0
+
+
+
+abb_train1 <- abb_train %>%
+ select(-host_id,-train,-X,-id) %>%
+filter(price <= 800 & price >= 30) 
+abb_test1 <- abb_test %>%
+ select(-host_id,-train,-X,-id) %>%
+ filter(price <= 800 & price >= 30) 
+
+# = rbind(abb_train2,abb_test2)
+
+
+train_p <- abb_train1$price
+test_p <- abb_test1$price
+
+abb_train1 = abb_train1 %>%
+  dplyr::select(-price)
+abb_test1 = abb_test1 %>%
+  dplyr::select(-price)
+
+# abb_lasso_t <- abb_train1 %>%
+#   dplyr::select(-neighbourhood_cleansed,-X)
+# abb_lasso_tr <- abb_test1 %>%
+#   dplyr::select(-neighbourhood_cleansed,-X)
+
+abb_lasso_t <- fastDummies::dummy_cols(abb_train1,select_columns = c("bed_type","cancellation_policy",
+                                                                      "host_response_time","neighbourhood_group_cleansed",
+                                                                      "property_type","room_type"))
+abb_lasso_tr <- fastDummies::dummy_cols(abb_test1,select_columns = c("bed_type","cancellation_policy",
+                                                                        "host_response_time","neighbourhood_group_cleansed",
+                                                                        "property_type","room_type"))
+# abb_lasso_t <- abb_lasso_t %>%
+#   dplyr::select(-property_type_Cave,-property_type_Houseboat,-`property_type_Dome house`,-`property_type_Farm stay`,-property_type_Castle,
+#          -property_type_Yurt,-property_type_Cabin,-cancellation_policy_strict)
+# abb_lasso_t <- abb_lasso_t %>%
+#   dplyr::select(-`property_type_Boat`)
+abb_lasso_t <- abb_lasso_t %>% 
+  select_if(is.numeric)
+abb_lasso_tr <- abb_lasso_tr %>%
+  select_if(is.numeric)
+abb_lasso_t <- as.matrix(abb_lasso_t)
+abb_lasso_tr <- as.matrix(abb_lasso_tr)
+
+
+
+abb_t <- as.data.frame(abb_lasso_t)
+abb_t <- cbind(abb_t,train_p)
+abb_t$price <- abb_t$train_p
+abb_tr <- as.data.frame(abb_lasso_tr)
+abb_tr <- cbind(abb_tr,test_p)
+abb_tr$price <- abb_tr$test_p
+
+# abb_t %>%
+#   select(-X,-train_p,-property_type_Cave,-property_type_Houseboat,-`property_type_Dome house`,-`property_type_Farm stay`,-property_type_Dorm,
+#          -property_type_Yurt) ->abb_t
+abb_t <- abb_t %>%
+  dplyr::select(-train_p)
+abb_tr %>%
+  dplyr::select(-test_p) -> abb_tr
+# abb_t = abb_t %>%
+#   select(-property_type_Dorm)
+# abb_tr = abb_tr %>%
+#   select(-cancellation_policy_strict,-property_type_Castle)
+complete_entry <- rbind(abb_t,abb_tr)
+```
+
+```{r, LASSO}
+
+lambda_seq <- seq(5,0,by = -0.001)
+las <- glmnet(abb_lasso_t,train_p,alpha = 1,lambda = lambda_seq)
+summary(las)
+las$lambda
+
+p_las_hat <- predict(las,abb_lasso_t)
+mse_las_train <- vector()
+for (i in 1:ncol(p_las_hat)){
+  mse_las_train[i] <-  mean((train_p - p_las_hat[,i])^2)
+}
+
+
+
+# There is something wrong with the sparse matrix, I'm trying to fix it
+p_las_hat_test <- predict(las,abb_lasso_tr)
+mse_las_test <- vector()
+for (i in 1:ncol(p_las_hat_test)){
+  mse_las_test[i] <-  mean((test_p - p_las_hat_test[,i])^2)
+}
+
+
+lambda_las_mse_train <- mse_las_train[which.min(mse_las_train)] 
+lambda_las_mse_test <- mse_las_test[which.min(mse_las_test)] 
+
+lasso_t  <- as.matrix(coef(las, s = lambda_las_mse_train))
+coef(las, s = lambda_las_mse_train) -> lasso_table
+# displaying lasso table
+lasso_t[rowSums(lasso_t^2)>0,]
+
+lambda <- cbind(lambda_seq,mse_las_test,mse_las_train)
+```
+
+```{r, LASSO Tuning}
+dd_mse <- tibble(
+lambda = las$lambda,
+mse = mse_las_train,
+dataset = "Train"
+)
+dd_mse <- rbind(dd_mse, tibble(
+lambda = las$lambda,
+mse = mse_las_test,
+dataset = "Test"
+))
+dd_mse
+
+ggplot(data = dd_mse, mapping = aes(x = lambda, y = mse,color = dataset)) +
+  geom_line(linetype = "solid") + 
+  labs(title = "Tuning Lambda for LASSO",x = "LAMBDA",y = "MSE")
+
+coef(las, s = lambda_las_mse_test)
+coef(las,s = lambda_las_mse_train)
+
+```
+
+```{r, xgboost setting up}
+xgbtrain <- xgb.DMatrix(abb_lasso_t,label = train_p)
+xgbtest <- xgb.DMatrix(abb_lasso_tr,label = test_p)
+watchlist <- list(train = xgbtrain,
+                  eval = xgbtest)
+param <- list(eta = 0.15,gamma = 5,min_child_weight = 10,subsample = 0.5,alpha = 1,objective = "reg:squarederror")
+param1 <- list(eta = 0.1, gamma = 3, min_child_weight = 5,subsample = 0.5,alpha = 1,max_depth = 7, 
+               colsample_bytree = 0.8,
+               objective = "reg:squarederror")
+```
+
+```{r, xgboost evaluation}
+#xgb.cv(param = param,xgbtrain, nrounds = 350,nfold = 10,metrics = "rmse") -> xgl.cv
+#best_xgl = xgl.cv$best_iteration
+
+xgl.model <- xgboost(params = param,data = xgbtrain,nrounds = 350,watchlist)
+#dygraphs::dygraph(xgl.model$evaluation_log)
+xgl  <- xgb.train(params = param,xgbtrain,nrounds = 300,watchlist = watchlist,verbose = 1)
+dygraphs::dygraph(xgl$evaluation_log)
+# explainer <- buildExplainer(xgl.model,xgbtrain,type = "regression")
+# pred.breakdown = explainPredictions(xgl.model,explainer,xgbtrain)
+# showWaterfall(xgl.model,explainer,xgbtrain,abb_lasso_t,1000,type = "regression")
+# 
+# col_names = attr(xgbtrain, ".Dimnames")[[2]]
+# imp = xgb.importance(col_names, xgl.model)
+# xgb.plot.importance(imp)
+
+
+# dygraphs::dygraph(xg3$evaluation_log)
+# summary(xg3)
+# coefplot(xg3,feature_names = colnames(xgbtrain))
+
+# xgb.cv(param = param,xgbtrain, nrounds = 300, watchlist,
+#           booster = "gbtree") -> xgt.cv
+# best_xgt = xgt.cv$best_iteration
+# xgt.model <- xgboost(params = param, data = xgbtrain,nrounds = best_xgt)
+# dygraphs::dygraph(xg1$evaluation_log)
+
+
+
+xgb.train(params = param,xgbtrain,nrounds = 300,watchlist = watchlist,verbose = 0, early_stopping_rounds = 5) ->bst
+best_iteration = bst$best_iteration
+dygraphs::dygraph(bst$evaluation_log)
+
+# trying to reduce the depth of the tree
+xgb.train(params = param1,xgbtrain,nrounds = 300,watchlist = watchlist,verbose = 1, 
+          early_stopping_rounds = 5) -> bst1
+best_iteration1 = bst1$best_iteration
+dygraphs::dygraph(bst1$evaluation_log)
+xg6.model <- xgboost(params = param1, xgbtrain, nrounds = best_iteration1)
+xgb.plot.multi.trees(model= xg6.model) -> Tree_Graph
+Tree_Graph
+
+xg6.preds =  predict(xg6.model,xgbtrain)
+xg6d <- as.data.frame(xg6.preds)
+ggplot(xg6d,aes(x = xg6.preds)) +geom_histogram(color="#a17e0b", fill="#2e0ba1",binwidth = 5) +
+  xlim(c(0,500))
+# ggplot(result_w,aes(x = x)) +
+#   geom_histogram(color="#a17e0b", fill="#2e0ba1",binwidth = 5) +
+#   xlim(c(0,500))
+
+############################################################################################################
+xg7.model <- xgboost(params = param, xgbtrain, nrounds = best_iteration)
+xg7.preds = predict(xg7.model,xgbtrain)
+xg7d <- as.data.frame(xg7.preds)
+ggplot(xg7d,aes(x = xg7.preds)) +geom_histogram(color="#a17e0b", fill="#2e0ba1",binwidth = 5) +
+  xlim(c(0,500))
+
+# Original Price Distribution for Checking
+# ggplot(result_w,aes(x = x)) +
+#   geom_histogram(color="#a17e0b", fill="#2e0ba1",binwidth = 5) +
+#   xlim(c(0,500))
+
+col_names = attr(xgbtrain, ".Dimnames")
+imp = xgb.importance(model = bst)
+xgb.ggplot.importance(imp,top_n = 25,cex.axis = 0.5) +
+  scale_color_manual(values = c("#a17e0b","#2e0ba1","#572634","#de9000")) -> xgb_explot
+xgb_explot
+xgb.plot.tree(bst)
+
+imp1 = xgb.importance(model = xgl.model)
+xgb.ggplot.importance(imp1,top_n = 25,cex.axis = 0.5) +
+  scale_color_manual(values = c("#a17e0b","#2e0ba1","#572634","#de9000")) -> xgb_explot1
+xgb_explot1
+# coefplot(xg1,feature_names = colnames(xgbtrain))
+# xgb.plot.tree(xg1)
+```
+
+```{r, XGboost with Log Price}
+xgbtrain_log <- xgb.DMatrix(abb_lasso_t,label = log(train_p))
+xgbtest_log <- xgb.DMatrix(abb_lasso_tr,label = log(test_p))
+watchlist_log <- list(train = xgbtrain_log,
+                  eval = xgbtest_log)
+param_log <- list(eta = 0.15,gamma = 3,min_child_weight = 5,alpha = 0.3,objective = "reg:squarederror")
+
+xgb.train(params = param_log,xgbtrain_log,nrounds = 300,watchlist = watchlist_log,
+          verbose = 1, early_stopping_rounds = 5) -> bst_log
+best_iteration_log = bst_log$best_iteration
+
+xglog.model <- xgboost(params = param_log, xgbtrain_log, nrounds = best_iteration_log)
+xglog.preds = predict(xglog.model,xgbtrain_log)
+xglog <- as.data.frame(xglog.preds)
+dygraphs::dygraph(bst_log$evaluation_log)
+
+ggplot(xglog,aes(x = xglog.preds)) +geom_histogram(color="#a17e0b", fill="#2e0ba1",bins = 50)
+
+implog = xgb.importance(model = xglog.model)
+xgb.ggplot.importance(implog,top_n = 25,cex.axis = 0.5) +
+  scale_color_manual(values = c("#a17e0b","#2e0ba1","#572634","#de9000")) -> xgb_explot_log
+xgb_explot_log
+
+converted_log_hat <- exp(xglog)
+ggplot(converted_log_hat,aes(x = xglog.preds)) +geom_histogram(color="#a17e0b", fill="#2e0ba1",bins = 50) +
+  xlim(c(0,500))
+```
+
+
+```{r, visualize the result comparison}
+xgr <- predict(xgl.model,xgbtrain)
+xgr_mat <- as.matrix(xgr)
+
+xgbest <- as.data.frame(xg7d)
+xgbest$label = "XGB_Best"
+names(xgbest)[1] <- "y"
+
+converted_log_hat$label = "XGB_LOG"
+names(converted_log_hat)[1] <- "y"
+
+xg3 <- as.data.frame(xg6d)
+xg3$label = "XGB_Iter3"
+names(xg3)[1] <- "y"
+
+# xgt <- predict(xg1,xgbtrain)
+# xgt_mat <- as.matrix(xgt)
+
+# xgr_mse <- vector()
+# for (i in 1:ncol(xgr)){
+#   xgr[i] <-  mean((train_p - xgr[,i])^2)
+# }
+# xg_mse_train <- xgr_mse[which.min(xgr_mse)] 
+
+train_y <- as.data.frame(train_p)
+train_y$label = "actual"
+names(train_y)[1]<- "y"
+
+lasso_y <- as.data.frame(p_las_hat[,101])
+lasso_y$label = "lasso_y"
+names(lasso_y)[1]<- "y"
+
+xgb_y <- as.data.frame(xgr)
+xgb_y$label = "xgb"
+names(xgb_y)[1]<- "y"
+
+# xgt_y <- as.data.frame(xgt)
+# xgt_y$label = "xgt"
+# names(xgt_y)[1]<- "y"
+
+result <- rbind(train_y,lasso_y)
+result <- rbind(result,xgb_y)
+result <- rbind(result,xgbest)
+result <- rbind(result,converted_log_hat)
+result <- rbind(result,xg3)
+#result <- rbind(result,xgt_y)
+
+
+ggplot(result, aes(x = y,fill = label, group = label)) +
+  geom_histogram(position = "stack",alpha = 0.8,bins = 100) +
+  xlim(c(-50,500)) +
+  ylim(c(0,2000))+
+ scale_fill_manual(values = c("#FF5A5F","#00A699","#FC642D","#484848","#767676","#4c6a78")) +
+  labs(title = "Different Regression Models vs. Actual Price") +
+  facet_wrap(~label,ncol = 2)
+  
+# xgr_original = exp(xgr)
+# xgr_original = as.data.frame(xgr_original)
+# xgr_original$label = "xgr"
+# names(xgr_original)[1] <- "y"
+# 
+# abb_train_originp <- as.data.frame(abb_train$price)
+# abb_train_originp$label = "original"
+# names(abb_train_originp)[1] <- "y"
+# 
+result_w <- as.data.frame(cbind(train_y[,1],lasso_y[,1],xgb_y[,1],xgbest[,1],converted_log_hat[,1]))
+names(result_w)[1] <- "x"
+names(result_w)[2] <- "lasso"
+names(result_w)[3] <- "xgb"
+names(result_w)[4] <- "xgbest"
+names(result_w)[5] <- "xgboosted_log"
+# 
+# 
+# result1 <- rbind(abb_train_originp,xgr_original)
+# result1_w <- cbind(abb_train_originp,xgr_original)
+# names(result1_w)[1] <- "x"
+# names(result1_w)[2] <- "eh"
+# 
+# ggplot(result1,aes(x = y, fill = label, group = label)) +
+#   geom_histogram(position = "stack",alpha = 0.8,bins = 50) +
+#    scale_fill_manual(values = c("#a17e0b","#2e0ba1","#572634","#de9000")) +
+#   xlim(c(0,1000))+
+#   facet_wrap(~label) +
+#   labs(title = "Original Price vs XGBoosted Tree")
+# 
+# ggplot(result1_w,aes(x = y, fill = label, group = label)) +
+#   geom_histogram(position = "stack",alpha = 0.8,bins = 50) +
+#    scale_fill_manual(values = c("#a17e0b","#2e0ba1","#572634","#de9000")) +
+#   xlim(c(0,1000))+
+#   labs(title = "Original Price vs XGBoosted Tree")
+
+# ggplot(result_w, aes(x = x,y = lasso)) +
+#   geom_point(position = "jitter",alpha = 0.5) +
+#   xlim(c(0,500)) +
+#   ylim(c(0,500)) +
+#   geom_abline()
+# ggplot(result_w, aes(x = x,y = xgb)) +
+#   geom_point(position = "jitter",alpha = 0.5) +
+#   xlim(c(0,500)) +
+#   ylim(c(0,500)) +
+#   geom_abline()
+# ggplot(result_w, aes(x = x,y = xgbest)) +
+#   geom_point(position = "jitter",alpha = 0.5) +
+#   xlim(c(0,500)) +
+#   ylim(c(0,500)) +
+#   geom_abline()
+# ggplot(result_w, aes(x = x,y = xgboosted_log)) +
+#   geom_point(position = "jitter",alpha = 0.5) +
+#   xlim(c(0,500)) +
+#   ylim(c(0,500)) +
+#   geom_abline()
+
+ggplot(result_w,aes(x = x)) +
+  geom_histogram(color="#a17e0b", fill="#2e0ba1",binwidth = 5) +
+  xlim(c(0,500))
+ggplot(result_w,aes(x = xgb)) +
+  geom_histogram(color="#a17e0b", fill="#2e0ba1",binwidth = 10) +
+  xlim(c(0,500))
+
+test_y <- as.data.frame(test_p) 
+# ggplot(test_y,aes(x = test_p)) +geom_histogram(color="#a17e0b", fill="#2e0ba1",binwidth = 5) +
+#   xlim(c(0,500))
+
+```
+
+```{r, Graphs ctd}
+# ggplot(lb,aes(X0,fill = "#FF5A5F")) + geom_histogram(fill = "#484848",alpha = 0.5) -> lightgbm
+# 
+# lightgbm + geom_histogram(data = xg7d,aes(x = xg7.preds,fill = "#484848"),alpha = 0.7,ignore.aes = TRUE)
+```
+
+
+```{r, text analysis}
+# abb_sentr <- read.csv("abb_sent.csv")
+# 
+# ggplot(abb_sentr,aes(x = word_count,y = ave_sentiment)) +
+#   geom_point(position = "jitter",alpha = 0.3)+
+#   geom_smooth(se = FALSE) +
+#   labs(title = "Most of the Reviews Are Short and Neutral",
+#        subtitle = "Longer Reviews Tend to be More Negative")
+
+# highlight(abb_sentr)
+
+# r_sample_tidy <- read.csv("sample_review.csv")
+
+ggplot(bert_sentr,aes(x = ave_sentiment,y = word_count,color = factor(label))) + geom_jitter(alpha = 0.5) + 
+  scale_color_manual(values = c("#FF5A5F","#00A699","#FC642D","#484848","#767676","#4c6a78"))+
+  labs(title = "Reviews that Are Negative by BERT Have Lower Sentiments")
+
+ggplot(complete_entry,aes(x = log10(freq), y = review_scores_rating)) + stat_summary(color = "#FF5A5F",geom = "crossbar") + geom_smooth(se = FALSE) + labs(title = "More Negative Reviews There Are...Lower Rating Score It Is")
+ggplot(complete_entry,aes(x = log10(freq), y = review_scores_accuracy)) + stat_summary(color = "#FF5A5F",geom = "crossbar") + geom_smooth(se = FALSE)
+ggplot(com,aes(x = log10(n),y = price)) + stat_summary(color = "#00A699") + geom_smooth(se = FALSE) +
+  labs(title = "Bad Reviews Usually Mean Lower Price")
+
+
+ggplot(bert_sentr,aes(x = ave_sentiment,y = sd,fill = factor(label))) + geom_violin(alpha = 0.5) + 
+  scale_fill_manual(values = c("#FF5A5F","#00A699","#FC642D","#484848","#767676","#4c6a78")) 
+
+```
+
